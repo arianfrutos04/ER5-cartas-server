@@ -140,21 +140,16 @@ app.post('/login', async (req, res) => {
     
              
     const result = await db.query(query)
+
+    if (result.rows.length === 0) {
+      return res.status(401).send("CREDENTIALS NOT CORRECT")
+    }
+
     const result2 = await db.query(query2)
-    let opponentsArray = result2.rows
-  
-    for (let i = 0; i < result2.rows.length; i++) {
-      const element = result2.rows[i].username;
-      const enemy = result2.rows[i].mongo_id;
-      opponentsArray.push[element, enemy];
-    }
-    const resultToSend = { id: result.rows[0].id, email: result.rows[0].email, username: result.rows[0].username, opponents: opponentsArray, mongo_id: result.rows[0].mongo_id }
-  
-    if (result.rows.username != '') {
-      res.status(200).send(resultToSend)
-    } else {
-      res.status(401).send("CREDENTIALS NOT CORRECT")
-    }
+    const user = result.rows[0]
+    const resultToSend = { id: user.id, email: user.email, username: user.username, opponents: result2.rows, mongo_id: user.mongo_id }
+
+    res.status(200).send(resultToSend)
   }catch(error){
     
     console.error("Error en la autenticación:", error);
@@ -189,8 +184,8 @@ app.post('/register', async (req, res) => {
   
       } else {
 
+        await db.query(query);
         await usersCollection.insertOne(user);
-        db.query(query);
         res.status(200).send("OK");
   
       }
@@ -202,6 +197,27 @@ app.post('/register', async (req, res) => {
   }
 })
 
+// Los usuarios registrados antes de perder la base de Mongo del curso solo existen en Postgres. Si falta
+// el documento de un jugador se crea con su nombre de Postgres, para que sus partidas se puedan guardar.
+// Devuelve null si el id no es válido o no corresponde a ningún usuario.
+async function findOrCreateMongoUser(mongoId) {
+  if (!ObjectId.isValid(mongoId)) {
+    return null;
+  }
+  const _id = new ObjectId(mongoId);
+  const existing = await usersCollection.findOne({ _id });
+  if (existing) {
+    return existing;
+  }
+  const result = await db.query('SELECT username FROM users WHERE mongo_id = $1;', [mongoId]);
+  if (result.rows.length === 0) {
+    return null;
+  }
+  const user = new User({ _id, name: result.rows[0].username, avatar: '', games: [] });
+  await usersCollection.insertOne(user);
+  return user;
+}
+
 app.post('/newGame', async (req, res) => {
   try{
       const players = req.body.players;
@@ -209,8 +225,8 @@ app.post('/newGame', async (req, res) => {
       const player1Id = players[0].player_id;
       const player2Id = players[1].player_id;
     
-      const player1 = await usersCollection.findOne({ _id: new ObjectId(player1Id) });
-      const player2 = await usersCollection.findOne({ _id: new ObjectId(player2Id) });
+      const player1 = await findOrCreateMongoUser(player1Id);
+      const player2 = await findOrCreateMongoUser(player2Id);
     
       if (!player1) {
         console.log("Jugador 1 no encontrado");
@@ -265,13 +281,8 @@ app.get('/getStatsData/:id', async (req, res) => {
       }
     ]).toArray();
     
-    if(results.length === 0){ç
-
-      res.status(401).send("El usuario no tiene partidas jugadas");
-    }else{
-
-      res.send(results).status(200);
-    }
+    // Sin partidas se devuelve la lista vacía: el cliente pinta las gráficas a cero con ella
+    res.status(200).send(results);
   }catch(error){
     console.error("Error to get user games data: ", error);
     res.status(500).send("Error");
